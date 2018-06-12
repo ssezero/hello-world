@@ -5,17 +5,17 @@ create or replace package CUX_INTERFACE_RULE_PKG is
   -- Purpose : 该package是为通用接口平台生成会计规则使用。
   
 
-Procedure main( ERRBUF  OUT Varchar2,RETCODE  OUT VARCHAR2,p_ledger In Number,p_detial In Number,P_batch    In Varchar2 Default 2,p_user     In Varchar2);
-Function get_rule_result(p_group_id In Number,P_deatal In Number) Return Varchar2;
-Function f_Isdate(p_Colvalue  Varchar2,
-                                    p_Mandatory Varchar2)
-  Return Pls_Integer;
+ Procedure main( ERRBUF  OUT Varchar2,RETCODE  OUT VARCHAR2,p_ledger In Number,p_detial In Number,P_batch    In Varchar2 Default 2,p_user     In Varchar2);
+ Function get_rule_result(p_group_id In Number,P_deatal In Number) Return Varchar2;
+ Function f_Isdate(p_Colvalue  Varchar2,p_Mandatory Varchar2)Return Pls_Integer;
  Function  create_gl_record(p_ledger_id In Number) Return Varchar2;
  Function validate_ic(p_value Varchar2) Return Varchar2;
-  Procedure update_attribute_header(p_ledger_id In Number);
-    Function get_ic(p_value  Varchar2,p_mapp Varchar2) Return Varchar2;
-      Function get_bankflow_source_type (p_detial_id In Varchar2) Return Varchar2;
-       Function get_mapping_comments(p_value  Varchar2,p_mapp Varchar2) Return Varchar2;
+ Procedure update_attribute_header(p_ledger_id In Number);
+ Function get_ic(p_value  Varchar2,p_mapp Varchar2) Return Varchar2;
+ Function get_bankflow_source_type (p_detial_id In Varchar2) Return Varchar2;
+ Function get_mapping_comments(p_value  Varchar2,p_mapp Varchar2) Return Varchar2;
+ Function get_normal_source_type (p_detial_id In Varchar2,p_source_type In Varchar2) Return Varchar2;
+    
 end CUX_INTERFACE_RULE_PKG;
 /
 create or replace package body CUX_INTERFACE_RULE_PKG is
@@ -545,7 +545,119 @@ End;
         cux_uninterface_pkg.log(const_ledger,-9999,'get_po_source_type 出现错误'||Sqlerrm,const_batch_id);
          Return -999; 
     End;
-  
+   
+    
+ /*================================================
+  * ===============================================
+  *   PROGRAM NAME:
+  *                get_normal_source_type
+  *   DESCRIPTION:
+  *                通用取业务类型函数
+  *
+  *   HISTORY:
+  *     1.00   2016-06-06   sun.zheng   Creation 
+  *                          
+  *
+  * ==============================================*/ 
+  --update_bussiness_name 
+ 
+   Function get_normal_source_type (p_detial_id In Varchar2,p_source_type In Varchar2) Return Varchar2
+    Is
+     l_sql    Varchar2(2000);
+  L_var    Number;
+  cv Sys_Refcursor;  ---动态游标
+  L_Con_Result Varchar2(200);--每个条件的返回结果值
+  L_Result     Varchar2(2000):='';--总的条件的返回的结果值
+ --存在多少种条件
+ Cursor cur_get_Condition Is Select 
+       Distinct cgimv.con_sequences,cgitm.mapp_id
+  From Cux_Gl_Intab_Map_Value Cgimv, Cux_Gl_Inter_Table_Mapping Cgitm
+ Where Cgimv.Mapp_Id = Cgitm.Mapp_Id
+ And  cgitm.attribute1=p_source_type
+ Order By cgimv.con_sequences;
+--单一条件下有多少记录
+Cursor cur_get_Con_Vals(P_Mapp_id In Varchar2,P_Con_sequence In Varchar2) Is
+ Select 
+       Cgimv.Column_Name,
+       cgimv.attribute1,
+       Cgimv.Conditions,
+       cgimv.true_value,
+       cgimv.false_value,
+       cgimv.attribute3
+  From Cux_Gl_Intab_Map_Value Cgimv
+  Where Cgimv.Mapp_Id=P_Mapp_id
+  And   cgimv.con_sequences=P_Con_sequence;
+ Begin
+  --1.取有多少条件 
+ For Cur_in_Condition In cur_get_Condition Loop
+   
+  --2.循环当前条件下有多少种情况
+  L_Con_Result:='';
+  For Cur_in_Con_Vals In cur_get_Con_Vals(Cur_in_Condition.mapp_id,Cur_in_Condition.con_sequences) Loop
+      
+      If Cur_in_Con_Vals.attribute1='VALUE' Then 
+      
+        --2.1 当条件是VAUE值的时候)
+          l_sql:= 'Select  count(1) From CUX_GL_DETAIL_ALL where DETIAL_ID='||p_detial_id||' and '||Cur_in_Con_Vals.column_name||'='''||Cur_in_Con_Vals.conditions||'''';
+           dbms_output.put_line('l_sql:'||l_sql);
+           Open cv For l_sql;
+           Loop
+           Fetch cv Into  L_var;
+           Exit When cv%Notfound;
+           End Loop;
+          --1.1 判断是否符合条件
+          If L_var > 0 Then 
+          L_Con_Result:=L_Con_Result||Cur_in_Con_Vals.true_value;
+          Else
+          L_Con_Result:=L_Con_Result||Cur_in_Con_Vals.false_value;
+          End If;
+      Else
+      --2.2 当条件是Set集
+        l_sql:='Select  count(1) From CUX_GL_DETAIL_ALL where DETIAL_ID='||p_detial_id||' and '
+                ||Cur_in_Con_Vals.column_name||' in ( Select Ffv.Flex_Value
+                                                      From Fnd_Flex_Values_Vl Ffv
+                                                     Where Ffv.Flex_Value_Set_Id = '||Cur_in_Con_Vals.attribute3||'
+                                                    )';
+                                                        
+           Open cv For l_sql;
+           Loop
+           Fetch cv Into  L_var;
+           Exit When cv%Notfound;
+           End Loop;
+          --1.1 判断是否符合条件
+          If L_var > 0 Then 
+          L_Con_Result:=L_Con_Result||Cur_in_Con_Vals.true_value;
+          Else
+          L_Con_Result:=L_Con_Result||Cur_in_Con_Vals.false_value;
+          End If;
+      End If;    
+  End Loop;
+   --2.3 如果当前条件下都没有取到考虑返回不存在的值
+      If L_Con_Result='' Then 
+        Begin
+        Select 
+             cgimv.attribute2 Into L_Con_Result
+        From Cux_Gl_Intab_Map_Value Cgimv
+        Where Cgimv.Mapp_Id=Cur_in_Condition.mapp_id
+        And   cgimv.con_sequences=Cur_in_Condition.con_sequences
+        And cgimv.attribute2 Is Not Null
+        And Rownum=1;
+        Exception When no_data_found Then 
+         L_Con_Result:='NULL';
+        End ; 
+      End If;
+      dbms_output.put_line('L_Con_Result:'||L_Con_Result);
+  --拼上每一次的
+ L_Result:=L_Result||nvl(L_Con_Result,'FAIL')||'-';
+ End Loop;
+  dbms_output.put_line('L_Result:'||L_Result);
+ L_Result:=Rtrim(L_Result,'-');
+       --返回结果
+       Return L_Result;
+      Exception When Others Then 
+        cux_uninterface_pkg.log(const_ledger,-9999,'get_normal_source_type(更新业务类型) 出现错误'||Sqlerrm,const_batch_id);
+         Return -999; 
+    End;
 
 
 /*================================================
@@ -584,7 +696,7 @@ Procedure Update_bussiness_name (P_ledger_id In Varchar2) Is
      For get_detial In get_detial_value Loop
            --1.判断来源
            l_base_result:='XXX';
-         Begin
+/*         Begin
            If get_detial.source_name = '银行流水导入' Then   ----------银行
               --1.1 值
               l_base_result:=get_bankflow_source_type(get_detial.detial_id);
@@ -629,7 +741,20 @@ Procedure Update_bussiness_name (P_ledger_id In Varchar2) Is
        End If; 
        Exception When Others Then 
            cux_uninterface_pkg.log(const_ledger,-9999,'动态更新业务类型出错了get_detial'||get_detial.detial_id,const_batch_id); 
-       End;
+       End;*/
+       Begin
+       Select cgim.condit_id Into l_condition_id
+                     From Cux_Gl_Intab_Map_Codition  Cgim,
+                          Cux_Gl_Inter_Table_Mapping Cgtm
+                    Where 1 = 1
+                      And Cgim.Mapp_Id = Cgtm.Mapp_Id
+                      And Cgtm.Attribute1 = get_detial.source_name
+                      And Rownum = 1 ;  
+       l_base_result:=get_normal_source_type(get_detial.detial_id,get_detial.source_name); 
+                    
+        Exception When Others Then 
+           cux_uninterface_pkg.log(const_ledger,-9999,'动态更新业务类型出错了get_detial'||get_detial.detial_id,const_batch_id); 
+        End ;              
        --取对应的业务类型的名字         
       L_result_name:=Null;
       L_result_code:=Null; 
@@ -1518,7 +1643,7 @@ Delete CUX_GL_DETAIL_INTER  cgdi Where cgdi.detaile_id=p_detail_Id And cgdi.attr
                        Where Cmla.Header_Id = cur_coa.out_mapping_id
                          And Rtrim(rtrim(Cmla.Input_Value ),Chr(9)) =  rtrim(rtrim(l_values,' '),chr(9));
                    Exception When Others Then 
-                     cux_uninterface_pkg.log(const_ledger,p_detail_Id,'此数据:'||l_values||'无法找到科目映射',const_batch_id); 
+                      cux_uninterface_pkg.log(const_ledger,p_detail_Id,'此数据:'||l_values||'无法找到科目映射',const_batch_id); 
                    End;
                  End If;    
              Exception When Others Then
